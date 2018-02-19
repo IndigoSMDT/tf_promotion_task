@@ -1,0 +1,120 @@
+provider "aws" {
+#AWS exported as enviroment
+#export AWS_ACCESS_KEY_ID=
+#export AWS_SECRET_ACCESS_KEY=
+region = "eu-central-1"
+}
+
+#s3 bucket
+resource "aws_s3_bucket" "task_bucket" {
+  bucket = "terraform-task-bucket"
+  acl    = "private"
+
+  tags {
+    Name        = "Task bucket"
+    Environment = "Task"
+  }
+}
+
+#sqs queue
+resource "aws_sqs_queue" "task_queue" {
+  name                      = "terraform-task-queue"
+  delay_seconds             = 90
+  max_message_size          = 2048
+  message_retention_seconds = 86400
+  receive_wait_time_seconds = 10
+
+  tags {
+    Name        = "Task queue"
+    Environment = "Task"
+  }
+}
+
+#role for keyless access
+resource "aws_iam_role" "task_role" {
+    name = "task-role"
+    assume_role_policy = <<EOF
+{
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Action": "sts:AssumeRole",
+          "Principal": {
+            "Service": "ec2.amazonaws.com"
+          },
+          "Effect": "Allow",
+          "Sid": ""
+        }
+      ]
+    }
+EOF
+}
+
+#Accaess police to s3 and sqs
+###Allow see all backets.
+###Allow see and upload files in 1 backet.
+###Recive and sent message to SQS.
+resource "aws_iam_policy" "task_policy" {
+    name        = "task-policy"
+    policy = <<EOF
+{
+  "Version": "2012-10-17",
+   "Statement":[
+  {
+     "Effect":"Allow",
+     "Action":[
+        "s3:ListAllMyBuckets"
+     ],
+     "Resource":"arn:aws:s3:::*"
+  },
+  {
+     "Effect":"Allow",
+     "Action":[
+        "s3:ListBucket",
+        "s3:GetBucketLocation"
+     ],
+     "Resource":"${aws_s3_bucket.task_bucket.arn}"
+  },
+  {
+     "Effect":"Allow",
+     "Action":[
+        "s3:PutObject",
+        "s3:GetObject",
+		"sqs:ReceiveMessage",
+		"sqs:SendMessage"
+     ],
+     "Resource":[
+	 "${aws_s3_bucket.task_bucket.arn}/*",
+	 "${aws_sqs_queue.task_queue.arn}"
+	 ]
+	 }
+   ]
+}
+EOF
+}
+
+#Attach policy to role
+resource "aws_iam_role_policy_attachment" "task_attach" {
+    role       = "${aws_iam_role.task_role.name}"
+    policy_arn = "${aws_iam_policy.task_policy.arn}"
+}
+
+#Profile
+resource "aws_iam_instance_profile" "task_instance_profile" {
+		    name = "task_instance_profile"
+		    roles = ["task-role"]
+}
+
+#EC2
+resource "aws_instance" "task_ec2" {
+    ami = "ami-5652ce39"
+    instance_type = "t2.micro"
+	key_name = "id_rsa" # Key for SSH access
+	subnet_id = "subnet-f943ab92" # Subnet with SG
+	iam_instance_profile = "${aws_iam_instance_profile.task_instance_profile.id}" # Role attacment
+	vpc_security_group_ids = ["sg-d6011fbd"] # SG with open 22 port
+	tags {
+		Name = "Task-EC2"
+		Environment = "Task"
+		}
+}
